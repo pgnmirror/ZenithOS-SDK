@@ -1,5 +1,5 @@
 ## This is official ZenithOS SDK created by ne5link!
-## Happy coding!
+# Happy coding!
 
 # --- DEVS ---
-# Ne5link (MAIN DEV)
+Ne5link (MAIN DEV)
