@@ -11,6 +11,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QEvent, QPoint, QTimer, QProcess
 import sys, os, subprocess, re, time, shutil, zipfile
+import json
 
 def log(message):
     timestamp = f"[{time.time():.2f}]"
@@ -56,6 +57,47 @@ class CSyntaxHighlighter(QSyntaxHighlighter):
                 start, end = match.span()
                 self.setFormat(start, end - start, fmt)
 
+class LongPressButton(QPushButton):
+    def __init__(self, text="", parent=None, long_press_ms=600):
+        super().__init__(text, parent)
+        self._long_press_ms = long_press_ms
+        self._long_pressed = False
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._on_long_press_timeout)
+        self._short_click_callback = None
+        self._long_press_callback = None
+
+    def mousePressEvent(self, ev):
+        super().mousePressEvent(ev)
+        self._long_pressed = False
+        self._timer.start(self._long_press_ms)
+
+    def mouseReleaseEvent(self, ev):
+        super().mouseReleaseEvent(ev)
+        if self._timer.isActive():
+            # short click
+            self._timer.stop()
+            if not self._long_pressed:
+                if callable(self._short_click_callback):
+                    self._short_click_callback()
+                else:
+                    self.clicked.emit()
+        else:
+            # timer expired and long press already handled
+            pass
+
+    def _on_long_press_timeout(self):
+        self._long_pressed = True
+        if callable(self._long_press_callback):
+            self._long_press_callback()
+
+    def set_short_click(self, fn):
+        self._short_click_callback = fn
+
+    def set_long_press(self, fn):
+        self._long_press_callback = fn
+
 class ZenithOSApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -70,6 +112,13 @@ class ZenithOSApp(QMainWindow):
         self.current_theme = "purple"
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
+        self.available_themes = ["purple", "dark", "deepblue"]
+        # load saved theme state (if exists)
+        try:
+            self.load_theme_state()
+        except Exception:
+            # ignore load errors and keep default
+            pass
 
         self.plugins_window = None
         self.plugins_list_widget = None
@@ -83,8 +132,13 @@ class ZenithOSApp(QMainWindow):
         self.stacked_widget.addWidget(self.main_menu)
         self.stacked_widget.addWidget(self.editor_page)
         self.set_shortcuts()
+        # apply theme to the freshly created UI
+        try:
+            self.apply_theme()
+        except Exception:
+            pass
         log("Starting ZenithOS Studio..")
-
+        
     def set_shortcuts(self):
         save_shortcut = QKeySequence(Qt.CTRL | Qt.Key_S)
         save_action = QAction(self)
@@ -103,6 +157,134 @@ class ZenithOSApp(QMainWindow):
         show_search_action.setShortcut(show_search_shortcut)
         show_search_action.triggered.connect(self.show_search_bar)
         self.addAction(show_search_action)
+
+
+    # --- theme persistence and helpers ---
+    def load_theme_state(self):
+        try:
+            data_dir = os.path.join(".", "data")
+            if not os.path.exists(data_dir):
+                os.makedirs(data_dir, exist_ok=True)
+            state_path = os.path.join(data_dir, "themestate.json")
+            if os.path.exists(state_path):
+                with open(state_path, "r", encoding="utf-8") as fh:
+                    js = json.load(fh)
+                theme = js.get("theme", "").lower()
+                if theme in self.available_themes:
+                    self.current_theme = theme
+        except Exception as e:
+            # don't crash on load
+            print("[themestate] load failed:", e)
+
+    def save_theme_state(self):
+        try:
+            data_dir = os.path.join(".", "data")
+            if not os.path.exists(data_dir):
+                os.makedirs(data_dir, exist_ok=True)
+            state_path = os.path.join(data_dir, "themestate.json")
+            with open(state_path, "w", encoding="utf-8") as fh:
+                json.dump({"theme": self.current_theme}, fh, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print("[themestate] save failed:", e)
+
+    def get_common_button_style(self):
+        # returns a simple, consistent QPushButton style for current theme
+        if self.current_theme == "dark":
+            bg = "#2f3136"        # graphite/dark gray
+            hover = "#444548"
+            text = "white"
+        elif self.current_theme == "deepblue":
+            bg = "#0f2b45"        # calm dark blue
+            hover = "#113a5f"
+            text = "white"
+        else:
+            # purple default
+            bg = "#6200EE"
+            hover = "#3700B3"
+            text = "white"
+        style = f"""
+            QPushButton {{
+                background-color: {bg};
+                color: {text};
+                font-size: 14px;
+                border: none;
+                padding: 8px 14px;
+                border-radius: 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {hover};
+            }}
+        """
+        return style
+
+    def apply_theme(self):
+        # apply basic colors to main window and common widgets
+        if self.current_theme == "dark":
+            self.setStyleSheet("background-color: #121212; color: white;")
+            txt_bg = "#1E1E1E"
+            txt_color = "#C0C0C0"
+            tree_bg = "#1A1A1A"
+            terminal_bg = "#000000"
+            terminal_color = "#00FF00"
+            lineedit_bg = "#2a2a2a"
+            lineedit_border = "#444444"
+        elif self.current_theme == "deepblue":
+            self.setStyleSheet("background-color: #071029; color: white;")
+            txt_bg = "#07172b"
+            txt_color = "#DDE7F2"
+            tree_bg = "#071022"
+            terminal_bg = "#00101a"
+            terminal_color = "#7FE0FF"
+            lineedit_bg = "#082135"
+            lineedit_border = "#0b3a5f"
+        else:
+            # purple
+            self.setStyleSheet("background-color: #1F001F; color: white;")
+            txt_bg = "#2C0032"
+            txt_color = "#E0E0E0"
+            tree_bg = "#2C0032"
+            terminal_bg = "#000000"
+            terminal_color = "#00FF00"
+            lineedit_bg = "#6A0DAD"
+            lineedit_border = "#BB86FC"
+
+        # apply to editor if exists
+        try:
+            self.text_edit.setStyleSheet(f"font-family: 'Courier New'; font-size: 14px; background-color: {txt_bg}; color: {txt_color}; padding: 5px;")
+        except Exception:
+            pass
+        try:
+            self.project_tree.setStyleSheet(f"background-color: {tree_bg}; color: {txt_color};")
+        except Exception:
+            pass
+        try:
+            self.terminal_output.setStyleSheet(f"background-color: {terminal_bg}; color: {terminal_color}; font-family: 'Courier New';")
+        except Exception:
+            pass
+        try:
+            self.search_input.setStyleSheet(f"""
+                QLineEdit {{
+                    background-color: {lineedit_bg};
+                    color: white;
+                    border-radius: 64px;
+                    padding: 8px 12px;
+                    font-size: 14px;
+                }}
+                QLineEdit:focus {{ border: 2px solid {lineedit_border}; }}
+            """)
+        except Exception:
+            pass
+
+        # update button styles across the app
+        self.update_button_styles()
+
+    def update_button_styles(self):
+        style = self.get_common_button_style()
+        for btn in self.findChildren(QPushButton):
+            try:
+                btn.setStyleSheet(style)
+            except Exception:
+                pass
 
     def create_main_menu(self):
         widget = QWidget()
@@ -224,9 +406,13 @@ class ZenithOSApp(QMainWindow):
         self.run_button.clicked.connect(self.run_project_in_terminal)
         tool_layout.addWidget(self.run_button)
 
-        self.compile_button = QPushButton("Compile (gcc)")
+        # Use LongPressButton for compile
+        self.compile_button = LongPressButton("Compile (gcc)")
         self.compile_button.setStyleSheet(tool_button_style)
-        self.compile_button.clicked.connect(self.compile_project)
+        # short click -> original compile (gcc)
+        self.compile_button.set_short_click(lambda: self.compile_with_compiler("gcc", output_name="app"))
+        # long press -> show options
+        self.compile_button.set_long_press(self.show_compile_options)
         tool_layout.addWidget(self.compile_button)
 
         self.zapp_button = QPushButton("Compile to .ZAPP")
@@ -621,31 +807,40 @@ class ZenithOSApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to open {relpath}:\n{e}")
 
     # --- Build / Run flows using QProcess to keep GUI responsive ---
-    
-    def compile_project(self):
-        missing = []
-        for tool in ["gcc"]:
-            if shutil.which(tool) is None:
-                missing.append(tool)
-        if missing:
+    def detect_available_arm_compiler(self):
+        candidates = [
+            "arm-linux-gnueabi-gcc",
+            "arm-linux-gnueabihf-gcc",
+            "arm-none-eabi-gcc",
+            "aarch64-linux-gnu-gcc",
+            "gcc"  # fallback if user really only has gcc; cross-compiling may still be attempted
+        ]
+        for c in candidates:
+            if shutil.which(c):
+                return c
+        return candidates[0]  # return first candidate even if not found; caller will warn
+
+    def compile_with_compiler(self, compiler_cmd, output_name="app"):
+        # Check availability
+        if shutil.which(compiler_cmd) is None:
             QMessageBox.warning(
                 self,
-                "Missing Tools",
-                "The following tools are missing: " + ", ".join(missing) + "\nInstall them to compile projects."
+                "Missing Compiler",
+                f"The compiler '{compiler_cmd}' was not found in PATH. Install it or adjust PATH."
             )
+            self.append_terminal(f"Compiler not found: {compiler_cmd}")
             return
 
         self.save_project(silent=True)
         self.clear_terminal()
-        self.append_terminal("Starting compilation (gcc)...")
+        self.append_terminal(f"Starting compilation ({compiler_cmd}) -> {output_name} ...")
 
-        # Ask flags
-        flags, ok = QInputDialog.getText(self, "GCC Flags", "Enter GCC flags (leave empty for none):")
+        flags, ok = QInputDialog.getText(self, "Compiler Flags", f"Enter flags for {compiler_cmd} (leave empty for none):")
         if not ok:
             self.append_terminal("Compilation cancelled by user.")
             return
 
-        cmd = ["gcc", "main.c", "-o", "app", "-I./include"]
+        cmd = [compiler_cmd, "main.c", "-o", output_name, "-I./include"]
         # auto add openssl flags if sapi.h detected
         if os.path.exists("./include/sapi.h"):
             self.append_terminal("Detected sapi.h -> adding OpenSSL flags automatically (-lcrypto -lssl)")
@@ -678,17 +873,46 @@ class ZenithOSApp(QMainWindow):
 
     def on_build_finished(self, exit_code, exit_status):
         if exit_code == 0:
-            self.append_terminal("Build finished successfully -> ./app")
-            QMessageBox.information(self, "Build", "Compilation successful! Binary: ./app")
+            self.append_terminal("Build finished successfully.")
+            QMessageBox.information(self, "Build", "Compilation successful!")
         else:
             self.append_terminal(f"Build failed with exit code {exit_code}")
             QMessageBox.critical(self, "Build failed", "Compilation failed. Check terminal output.")
         self.build_process = None
 
+    def show_compile_options(self):
+        # Show a small dialog with choices for x86 or ARM
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Compile options")
+        dlg.setStyleSheet("background-color: #2C0032; color: white; padding: 5px;")
+        layout = QVBoxLayout()
+        label = QLabel("Choose target:")
+        label.setFont(QFont("Arial", 10))
+        layout.addWidget(label)
+
+        btn_x86 = QPushButton("Compile for x86 (gcc)")
+        btn_x86.clicked.connect(lambda: (dlg.accept(), self.compile_with_compiler("gcc", output_name="app")))
+        layout.addWidget(btn_x86)
+
+        # Detect an available ARM cross-compiler
+        detected = self.detect_available_arm_compiler()
+        arm_text = f"Compile for ARM ({detected})"
+        btn_arm = QPushButton(arm_text)
+        btn_arm.clicked.connect(lambda: (dlg.accept(), self.compile_with_compiler(detected, output_name="app_arm")))
+        layout.addWidget(btn_arm)
+
+        note = QLabel("Short click the Compile button -> normal gcc. Long-press -> options.")
+        note.setStyleSheet("color: gray; font-size: 12px;")
+        layout.addWidget(note)
+
+        dlg.setLayout(layout)
+        dlg.setFixedSize(360, 160)
+        dlg.exec()
+
     def run_project_in_terminal(self):
         if not os.path.exists("app"):
             QMessageBox.warning(self, "Run", "Binary ./app not found. Compiling first...")
-            self.compile_project()
+            self.compile_with_compiler("gcc", output_name="app")
             return
 
         args_text, ok = QInputDialog.getText(self, "Run App", "Enter arguments (separated by spaces):")
@@ -736,7 +960,6 @@ class ZenithOSApp(QMainWindow):
         self.save_project(silent=True)
         self.clear_terminal()
         self.append_terminal("Compiling and packaging to .ZAPP...")
-        # Ask for manifest info
         name, ok1 = QInputDialog.getText(self, "Manifest", "App name:")
         if not ok1: return
         version, ok2 = QInputDialog.getText(self, "Manifest", "Version:")
@@ -810,7 +1033,7 @@ class ZenithOSApp(QMainWindow):
 
     def clean_project(self):
         removed = []
-        for f in ["app", "project.zapp", "manifest.json"]:
+        for f in ["app", "app_arm", "project.zapp", "manifest.json"]:
             if os.path.exists(f):
                 try:
                     os.remove(f)
@@ -893,9 +1116,15 @@ class ZenithOSApp(QMainWindow):
         theme_label.setFont(QFont("Poppins", 16))
         layout.addWidget(theme_label)
         theme_combo = QComboBox()
-        theme_combo.addItems(["Purple (default)", "Dark"])
+        theme_combo.addItems(["Purple (default)", "Dark (серо-графитовые кнопки)", "Deep Blue (темно-синий)"])
         theme_combo.setStyleSheet("QComboBox { background-color: #2C0032; color: #E0E0E0; padding: 5px; font-size: 16px; border: none; border-radius: 10px; } QComboBox QAbstractItemView { background-color: #2C0032; color: #E0E0E0; }")
         theme_combo.currentIndexChanged.connect(self.change_theme)
+        # set current index to saved theme
+        try:
+            idx_map = {"purple": 0, "dark": 1, "deepblue": 2}
+            theme_combo.setCurrentIndex(idx_map.get(self.current_theme, 0))
+        except Exception:
+            pass
         layout.addWidget(theme_combo)
         ok_button = QPushButton("OK")
         ok_button.setStyleSheet("QPushButton { background-color: #6200EE; color: white; font-size: 16px; border: none; padding: 10px 20px; border-radius: 20px; } QPushButton:hover { background-color: #3700B3; }")
@@ -905,14 +1134,22 @@ class ZenithOSApp(QMainWindow):
         settings_dialog.exec()
 
     def change_theme(self, index):
-        if index == 1:
-            self.setStyleSheet("background-color: #121212; color: white;")
-            self.current_theme = "dark"
-            self.text_edit.setStyleSheet("font-family: 'Courier New'; font-size: 14px; background-color: #1E1E1E; color: #C0C0C0; padding: 5px;")
-        else:
-            self.setStyleSheet("background-color: #1F001F; color: white;")
+        # index: 0 -> purple, 1 -> dark, 2 -> deepblue
+        try:
+            if index == 1:
+                self.current_theme = "dark"
+            elif index == 2:
+                self.current_theme = "deepblue"
+            else:
+                self.current_theme = "purple"
+        except Exception:
             self.current_theme = "purple"
-            self.text_edit.setStyleSheet("font-family: 'Courier New'; font-size: 14px; background-color: #2C0032; color: #E0E0E0; padding: 5px;")
+        # apply and persist
+        try:
+            self.apply_theme()
+            self.save_theme_state()
+        except Exception as e:
+            print("[themestate] change_theme failed:", e)
 
     def show_search_bar(self):
         anim = QPropertyAnimation(self.search_bar, b"maximumHeight")
@@ -957,4 +1194,3 @@ if __name__ == "__main__":
         ZenithOSApp().show()
 
     sys.exit(app.exec())
-
